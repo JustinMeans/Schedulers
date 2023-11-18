@@ -12,6 +12,7 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
     case eulerAncenstralDiscrete
     case dpmSolverMultistep
     case dpm2Karras
+    case lcm
     
     public var id: String { rawValue }
     
@@ -29,6 +30,8 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
             return "DPM-Solver++"
         case .dpm2Karras:
             return "DPM2 Karras"
+        case .lcm:
+            return "LCM"
         }
     }
     
@@ -88,6 +91,15 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
             predictionType: predictionType
         )
         case .dpm2Karras: return KDPM2DiscreteScheduler(
+            strength: strength,
+            stepCount: stepCount,
+            trainStepCount: trainStepCount,
+            betaSchedule: betaSchedule,
+            betaStart: betaStart,
+            betaEnd: betaEnd,
+            predictionType: predictionType
+        )
+        case .lcm: return LCMScheduler(
             strength: strength,
             stepCount: stepCount,
             trainStepCount: trainStepCount,
