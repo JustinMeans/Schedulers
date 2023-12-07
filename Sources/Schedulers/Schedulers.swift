@@ -13,6 +13,8 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
     case eulerAncenstralDiscrete
     case dpmSolverMultistep
     case dpmSolverMultistepKarras
+    case dpmSolverSinglestep
+    case dpmSolverSinglestepKarras
     case dpm2
     case dpm2Karras
     case lcm
@@ -35,6 +37,10 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
             return "DPM++ 2M"
         case .dpmSolverMultistepKarras:
             return "DPM++ 2M Karras"
+        case .dpmSolverSinglestep:
+            return "DPM++ SDE"
+        case .dpmSolverSinglestepKarras:
+            return "DPM++ SDE Karras"
         case .dpm2:
             return "DPM2"
         case .dpm2Karras:
@@ -52,6 +58,8 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
         betaSchedule: BetaSchedule = .scaledLinear,
         betaStart: Float = 0.00085,
         betaEnd: Float = 0.012,
+        setAlphaToOne: Bool? = nil,
+        stepsOffset: Int? = nil,
         predictionType: PredictionType = .epsilon,
         timestepSpacing: TimestepSpacing? = nil
     ) -> any Scheduler {
@@ -63,6 +71,8 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
             betaSchedule: betaSchedule,
             betaStart: betaStart,
             betaEnd: betaEnd,
+            setAlphaToOne: setAlphaToOne,
+            stepsOffset: stepsOffset,
             predictionType: predictionType,
             timestepSpacing: timestepSpacing
         )
@@ -73,6 +83,8 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
             betaSchedule: betaSchedule,
             betaStart: betaStart,
             betaEnd: betaEnd,
+            setAlphaToOne: setAlphaToOne,
+            stepsOffset: stepsOffset,
             predictionType: predictionType,
             timestepSpacing: timestepSpacing
         )
@@ -83,6 +95,7 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
             betaSchedule: betaSchedule,
             betaStart: betaStart,
             betaEnd: betaEnd,
+            stepsOffset: stepsOffset,
             predictionType: predictionType,
             timestepSpacing: timestepSpacing
         )
@@ -93,6 +106,7 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
             betaSchedule: betaSchedule,
             betaStart: betaStart,
             betaEnd: betaEnd,
+            stepsOffset: stepsOffset,
             predictionType: predictionType,
             timestepSpacing: timestepSpacing,
             useKarrasSigmas: true
@@ -104,6 +118,7 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
             betaSchedule: betaSchedule,
             betaStart: betaStart,
             betaEnd: betaEnd,
+            stepsOffset: stepsOffset,
             predictionType: predictionType,
             timestepSpacing: timestepSpacing
         )
@@ -114,6 +129,7 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
             betaSchedule: betaSchedule,
             betaStart: betaStart,
             betaEnd: betaEnd,
+            stepsOffset: stepsOffset,
             predictionType: predictionType,
             timestepSpacing: timestepSpacing
         )
@@ -124,8 +140,28 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
             betaSchedule: betaSchedule,
             betaStart: betaStart,
             betaEnd: betaEnd,
+            stepsOffset: stepsOffset,
             predictionType: predictionType,
             timestepSpacing: timestepSpacing,
+            useKarrasSigmas: true
+        )
+        case .dpmSolverSinglestep: return DPMSolverSinglestepScheduler(
+            strength: strength,
+            stepCount: stepCount,
+            trainStepCount: trainStepCount,
+            betaSchedule: betaSchedule,
+            betaStart: betaStart,
+            betaEnd: betaEnd,
+            predictionType: predictionType
+        )
+        case .dpmSolverSinglestepKarras: return DPMSolverSinglestepScheduler(
+            strength: strength,
+            stepCount: stepCount,
+            trainStepCount: trainStepCount,
+            betaSchedule: betaSchedule,
+            betaStart: betaStart,
+            betaEnd: betaEnd,
+            predictionType: predictionType,
             useKarrasSigmas: true
         )
         case .dpm2: return KDPM2DiscreteScheduler(
@@ -135,6 +171,7 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
             betaSchedule: betaSchedule,
             betaStart: betaStart,
             betaEnd: betaEnd,
+            stepsOffset: stepsOffset,
             predictionType: predictionType,
             timestepSpacing: timestepSpacing
         )
@@ -145,6 +182,7 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
             betaSchedule: betaSchedule,
             betaStart: betaStart,
             betaEnd: betaEnd,
+            stepsOffset: stepsOffset,
             predictionType: predictionType,
             timestepSpacing: timestepSpacing,
             useKarrasSigmas: true
@@ -157,6 +195,7 @@ public enum Schedulers: String, CaseIterable, Identifiable, CustomStringConverti
             betaSchedule: betaSchedule,
             betaStart: betaStart,
             betaEnd: betaEnd,
+            setAlphaToOne: setAlphaToOne,
             predictionType: predictionType
         )
         case .lcm: return LCMScheduler(

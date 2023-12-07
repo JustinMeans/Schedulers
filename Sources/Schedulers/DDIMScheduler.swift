@@ -21,6 +21,7 @@ public final class DDIMScheduler: Scheduler {
     public let betas: [Float]
     public let alphas: [Float]
     public let alphasCumProd: [Float]
+    public let finalAlphaCumProd: Float
     public let timeSteps: [Double]
     public let predictionType: PredictionType
     
@@ -42,6 +43,8 @@ public final class DDIMScheduler: Scheduler {
         betaSchedule: BetaSchedule = .scaledLinear,
         betaStart: Float = 0.00085,
         betaEnd: Float = 0.012,
+        setAlphaToOne: Bool? = nil,
+        stepsOffset: Int? = nil,
         predictionType: PredictionType = .epsilon,
         timestepSpacing: TimestepSpacing? = nil
     ) {
@@ -58,6 +61,16 @@ public final class DDIMScheduler: Scheduler {
         }
         self.alphasCumProd = alphasCumProd
         
+        // At every step in ddim, we are looking into the previous alphas_cumprod
+        // For the final step, there is no previous alphas_cumprod because we are already at 0
+        // `setAlphaToOne` decides whether we set this parameter simply to one or
+        // whether we use the final alpha of the "non-previous" one.
+        if setAlphaToOne ?? true {
+            self.finalAlphaCumProd = 1
+        } else {
+            self.finalAlphaCumProd = alphasCumProd[0]
+        }
+        
         var timeSteps: [Double]
         switch timestepSpacing {
         case .linspace:
@@ -66,7 +79,7 @@ public final class DDIMScheduler: Scheduler {
                 .reversed()
         case .leading:
             let stepRatio = trainStepCount / stepCount
-            timeSteps = (0..<stepCount).map { Double($0 * stepRatio).rounded() }.reversed()
+            timeSteps = (0..<stepCount).map { Double($0 * stepRatio).rounded() + Double(stepsOffset ?? 0) }.reversed()
         case .trailing:
             let stepRatio = Double(trainStepCount) / Double(stepCount)
             timeSteps = stride(from: Double(trainStepCount), to: 1, by: -stepRatio).map { round($0) - 1 }
@@ -106,7 +119,7 @@ public final class DDIMScheduler: Scheduler {
         
         // 2. compute alphas, betas
         let alphaProdt = alphasCumProd[timeStep]
-        let alphaProdtPrev = alphasCumProd[max(0, prevStep)]
+        let alphaProdtPrev = prevStep >= 0 ? alphasCumProd[prevStep] : finalAlphaCumProd
         
         let betaProdt = 1 - alphaProdt
         

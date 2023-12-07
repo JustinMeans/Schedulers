@@ -22,6 +22,7 @@ public final class LCMScheduler: Scheduler {
     public let betas: [Float]
     public let alphas: [Float]
     public let alphasCumProd: [Float]
+    public let finalAlphaCumProd: Float
     public let timeSteps: [Double]
     public let predictionType: PredictionType
     
@@ -45,7 +46,9 @@ public final class LCMScheduler: Scheduler {
         betaSchedule: BetaSchedule = .scaledLinear,
         betaStart: Float = 0.00085,
         betaEnd: Float = 0.012,
-        predictionType: PredictionType = .epsilon
+        setAlphaToOne: Bool? = nil,
+        predictionType: PredictionType = .epsilon,
+        timestepSpacing: TimestepSpacing? = nil
     ) {
         self.trainStepCount = trainStepCount
         self.inferenceStepCount = originalStepCount
@@ -59,27 +62,35 @@ public final class LCMScheduler: Scheduler {
         }
         self.alphasCumProd = alphasCumProd
         
+        // At every step in ddim, we are looking into the previous alphas_cumprod
+        // For the final step, there is no previous alphas_cumprod because we are already at 0
+        // `setAlphaToOne` decides whether we set this parameter simply to one or
+        // whether we use the final alpha of the "non-previous" one.
+        if setAlphaToOne ?? true {
+            self.finalAlphaCumProd = 1
+        } else {
+            self.finalAlphaCumProd = alphasCumProd[0]
+        }
+        
         let stepRatio = Double(trainStepCount / originalStepCount)
-        var lcmOriginTimesteps = (1...originalStepCount).map {
+        var lcmOriginTimesteps = (1...max(1, Int(Float(originalStepCount) * (strength ?? 1)))).map {
             (Double($0) * stepRatio).rounded() - 1
         }
-        if let strength {
-            let tEnc = Int(Float(lcmOriginTimesteps.count) * strength)
-            lcmOriginTimesteps = Array(lcmOriginTimesteps[0..<tEnc])
-        }
-        let skippingStep = Int(lcmOriginTimesteps.count / stepCount)
-        let timeSteps: [Double] = stride(from: lcmOriginTimesteps.count-1, to: 0, by: -skippingStep)
+        lcmOriginTimesteps.reverse()
+        let timestepsIndexes = linspace(0, Double(lcmOriginTimesteps.count), stepCount, endpoint: false)
+            .map { Int($0) }
+        self.timeSteps = timestepsIndexes
             .map { lcmOriginTimesteps[$0] }
-        self.timeSteps = Array(timeSteps[0..<stepCount])
     }
     
     func getScalingsForBoundaryConditionDiscrete(timeStep t: Double) -> (Double, Double) {
         let sigmaData = 0.5 // Default: 0.5
         let powSigmaData = pow(sigmaData, 2)
+        let scaledTimestep = t * 10 // Default timestep_scaling: 10
+        let powScaledTimestep = pow(scaledTimestep, 2)
         
-        // By dividing 0.1: This is almost a delta function at t=0.
-        let cSkip = powSigmaData / (pow((t / 0.1), 2) + powSigmaData)
-        let cOut = (t / 0.1) / pow((pow((t / 0.1), 2) + powSigmaData), 0.5)
+        let cSkip = powSigmaData / (pow(scaledTimestep, 2) + powSigmaData)
+        let cOut = scaledTimestep / pow((powScaledTimestep + powSigmaData), 0.5)
         return (cSkip, cOut)
     }
     
@@ -94,11 +105,11 @@ public final class LCMScheduler: Scheduler {
         
         //  1. get previous step value
         let timeStep = Int(t)
-        let prevTimestep = Int(stepIndex == timeSteps.count - 1 ? 0 : timeSteps[stepIndex + 1])
+        let prevTimestep = Int(stepIndex < timeSteps.count - 1 ? timeSteps[stepIndex + 1] : t)
         
         // 2. compute alphas, betas
         let alphaProdt = alphasCumProd[timeStep]
-        let alphaProdtPrev = alphasCumProd[max(0, prevTimestep)]
+        let alphaProdtPrev = prevTimestep >= 0 ? alphasCumProd[prevTimestep] : finalAlphaCumProd
         let betaProdt = 1 - alphaProdt
         let betaProdtPrev = 1 - alphaProdtPrev
         
@@ -135,9 +146,10 @@ public final class LCMScheduler: Scheduler {
         modelOutputs.append(denoised)
         
         // 7. Sample and inject noise z ~ N(0, I) for MultiStep Inference
-        // Noise is not used for one-step sampling.
+        // Noise is not used on the final timestep of the timestep schedule.
+        // This also means that noise is not used for one-step sampling.
         let prevSample: MLShapedArray<Float32>
-        if timeSteps.count > 1 {
+        if t != timeSteps.last {
             let noise = MLShapedArray<Float32>(converting: generator.nextArray(shape: output.shape))
             let sqrtAlphaProdtPrev = sqrt(alphaProdtPrev)
             let sqrtBetaProdtPrev = sqrt(betaProdtPrev)

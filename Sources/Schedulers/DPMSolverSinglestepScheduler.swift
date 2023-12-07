@@ -1,5 +1,5 @@
 //
-//  DPMSolverMultistepScheduler.swift
+//  DPMSolverSinglestepScheduler.swift
 //
 //
 //  Created by Guillermo Cique Fernández on 21/04/23.
@@ -12,7 +12,7 @@ import RandomGenerator
 /// A scheduler used to compute a de-noised image
 ///
 ///  This implementation matches:
-///  [Hugging Face Diffusers DPMSolverMultistepScheduler](https://github.com/huggingface/diffusers/blob/main/src/diffusers/schedulers/scheduling_dpmsolver_multistep.py)
+///  [Hugging Face Diffusers DPMSolverSinglestepScheduler](https://github.com/huggingface/diffusers/blob/main/src/diffusers/schedulers/scheduling_dpmsolver_singlestep.py)
 ///
 /// It uses the DPM-Solver++ algorithm: [code](https://github.com/LuChengTHU/dpm-solver) [paper](https://arxiv.org/abs/2211.01095).
 /// Limitations:
@@ -20,7 +20,7 @@ import RandomGenerator
 ///  - Second order only.
 ///  - No dynamic thresholding.
 ///  - `midpoint` solver algorithm.
-public final class DPMSolverMultistepScheduler: Scheduler {
+public final class DPMSolverSinglestepScheduler: Scheduler {
     public let trainStepCount: Int
     public let inferenceStepCount: Int
     public let betas: [Float]
@@ -33,13 +33,14 @@ public final class DPMSolverMultistepScheduler: Scheduler {
     public let sigma_t: [Float]
     public let lambda_t: [Float]
     
-    public let solverOrder = 2
-    private(set) var lowerOrderStepped = 0
+    public let solverOrder: Int
+    private let orderList: [Int]
     
     /// Whether to use lower-order solvers in the final steps. Only valid for less than 15 inference steps.
     /// We empirically find this trick can stabilize the sampling of DPM-Solver, especially with 10 or fewer steps.
-    public let useLowerOrderFinal = true
+    public let useLowerOrderFinal: Bool
     
+    public private(set) var sample: MLShapedArray<Float32>?
     // Stores solverOrder (2) items
     public private(set) var modelOutputs: [MLShapedArray<Float32>] = []
 
@@ -61,13 +62,11 @@ public final class DPMSolverMultistepScheduler: Scheduler {
         betaEnd: Float = 0.012,
         stepsOffset: Int? = nil,
         predictionType: PredictionType = .epsilon,
-        timestepSpacing: TimestepSpacing? = nil,
         useKarrasSigmas: Bool = false
     ) {
         self.trainStepCount = trainStepCount
         self.inferenceStepCount = stepCount
         self.predictionType = predictionType
-        let timestepSpacing = timestepSpacing ?? .linspace
         
         self.betas = betaSchedule.betas(betaStart: betaStart, betaEnd: betaEnd, trainStepCount: trainStepCount)
         self.alphas = betas.map({ 1.0 - $0 })
@@ -77,22 +76,10 @@ public final class DPMSolverMultistepScheduler: Scheduler {
         }
         self.alphasCumProd = alphasCumProd
         
-        var timeSteps: [Double]
-        switch timestepSpacing {
-        case .linspace:
-            timeSteps = linspace(0, Double(trainStepCount - 1), stepCount + 1)
-                .reversed()
-                .dropLast()
-                .map { $0.rounded() }
-        case .leading:
-            let stepRatio = trainStepCount / (stepCount + 1)
-            timeSteps = (0..<stepCount + 1).map { Double($0 * stepRatio).rounded() + Double(stepsOffset ?? 0) }
-                .reversed()
-                .dropLast()
-        case .trailing:
-            let stepRatio = Double(trainStepCount) / Double(stepCount)
-            timeSteps = stride(from: Double(trainStepCount), to: 1, by: -stepRatio).map { round($0) - 1 }
-        }
+        var timeSteps: [Double] = linspace(0, Double(trainStepCount - 1), stepCount + 1)
+            .reversed()
+            .dropLast()
+            .map { $0.rounded() }
         
         var alpha_t: [Float]
         var sigma_t: [Float]
@@ -104,9 +91,9 @@ public final class DPMSolverMultistepScheduler: Scheduler {
             var sigmas = vForce.sqrt(scaled).map { Double($0) }
             let logSigmas = sigmas.map { log($0) }
             
-            sigmas = DPMSolverMultistepScheduler.convertToKarras(sigmas: sigmas, stepCount: stepCount)
+            sigmas = DPMSolverSinglestepScheduler.convertToKarras(sigmas: sigmas, stepCount: stepCount)
                 .reversed()
-            timeSteps = DPMSolverMultistepScheduler.convertToTimesteps(sigmas: sigmas, logSigmas: logSigmas)
+            timeSteps = DPMSolverSinglestepScheduler.convertToTimesteps(sigmas: sigmas, logSigmas: logSigmas)
                 .map { $0.rounded() }
             
             var karrasSigmas = sigmas.map { Float($0) }
@@ -134,10 +121,50 @@ public final class DPMSolverMultistepScheduler: Scheduler {
         self.alpha_t = alpha_t
         self.sigma_t = sigma_t
         self.lambda_t = zip(self.alpha_t, self.sigma_t).map { α, σ in log(α) - log(σ) }
+        
+        self.solverOrder = 2
+        self.useLowerOrderFinal = true
+        self.orderList = DPMSolverSinglestepScheduler.orderList(
+            stepCount: stepCount,
+            order: solverOrder,
+            useLowerOrderFinal: useLowerOrderFinal
+        )
     }
     
     func timestepToIndex(_ timestep: Double) -> Int {
         timeSteps.firstIndex(of: timestep) ?? timeSteps.count
+    }
+    
+    static func orderList(stepCount: Int, order: Int, useLowerOrderFinal: Bool) -> [Int] {
+        let orders: [[Int]]
+        if useLowerOrderFinal {
+            if order == 1 {
+                orders = [[Int]](repeating: [1], count: stepCount)
+            } else if order == 2 {
+                if stepCount % 2 == 0 {
+                    orders = [[Int]](repeating: [1, 2], count: stepCount / 2)
+                } else {
+                    orders = [[Int]](repeating: [1, 2], count: stepCount / 2) + [[1]]
+                }
+            } else {
+                if stepCount % 3 == 0 {
+                    orders = [[Int]](repeating: [1, 2, 3], count: stepCount / 3 - 1) + [[1, 2]] + [[1]]
+                } else if stepCount % 3 == 1 {
+                    orders = [[Int]](repeating: [1, 2, 3], count: stepCount / 3) + [[1]]
+                } else {
+                    orders = [[Int]](repeating: [1, 2, 3], count: stepCount / 3) + [[1, 2]]
+                }
+            }
+        } else {
+            if order == 1 {
+                orders = [[Int]](repeating: [1], count: stepCount)
+            } else if order == 2 {
+                orders = [[Int]](repeating: [1, 2], count: stepCount / 2)
+            } else {
+                orders = [[Int]](repeating: [1, 2, 3], count: stepCount / 3)
+            }
+        }
+        return orders.flatMap { $0 }
     }
     
     /// Convert the model output to the corresponding type the algorithm needs.
@@ -176,7 +203,7 @@ public final class DPMSolverMultistepScheduler: Scheduler {
 
     /// One step for the first-order DPM-Solver (equivalent to DDIM).
     /// See https://arxiv.org/abs/2206.00927 for the detailed derivation.
-    /// var names and code structure mostly follow https://github.com/huggingface/diffusers/blob/main/src/diffusers/schedulers/scheduling_dpmsolver_multistep.py
+    /// var names and code structure mostly follow https://github.com/huggingface/diffusers/blob/main/src/diffusers/schedulers/scheduling_dpmsolver_singlestep.py
     func firstOrderUpdate(
         modelOutput: MLShapedArray<Float32>,
         timestep: Double,
@@ -196,8 +223,8 @@ public final class DPMSolverMultistepScheduler: Scheduler {
         return x_t
     }
 
-    /// One step for the second-order multistep DPM-Solver++ algorithm, using the midpoint method.
-    /// var names and code structure mostly follow https://github.com/huggingface/diffusers/blob/main/src/diffusers/schedulers/scheduling_dpmsolver_multistep.py
+    /// One step for the second-order singlestep DPM-Solver++ algorithm, using the midpoint method.
+    /// var names and code structure mostly follow https://github.com/huggingface/diffusers/blob/main/src/diffusers/schedulers/scheduling_dpmsolver_singlestep.py
     func secondOrderUpdate(
         modelOutputs: [MLShapedArray<Float32>],
         timesteps: [Double],
@@ -212,22 +239,25 @@ public final class DPMSolverMultistepScheduler: Scheduler {
             Double(lambda_t[timestepToIndex(s1)])
         )
         let p_alpha_t = Double(alpha_t[timestepToIndex(t)])
-        let (p_sigma_t, sigma_s0) = (Double(sigma_t[timestepToIndex(t)]), Double(sigma_t[timestepToIndex(s0)]))
-        let (h, h_0) = (p_lambda_t - lambda_s0, lambda_s0 - lambda_s1)
+        let (p_sigma_t, sigma_s1) = (
+            Double(sigma_t[timestepToIndex(t)]),
+            Double(sigma_t[timestepToIndex(s1)])
+        )
+        let (h, h_0) = (p_lambda_t - lambda_s1, lambda_s0 - lambda_s1)
         let r0 = h_0 / h
-        let D0 = m0
+        let D0 = m1
         
         // D1 = (1.0 / r0) * (m0 - m1)
         let D1 = [m0, m1].weightedSum([1/r0, -1/r0])
         
         // See https://arxiv.org/abs/2211.01095 for detailed derivations
         // x_t = (
-        //     (sigma_t / sigma_s0) * sample
+        //     (sigma_t / sigma_s1) * sample
         //     - (alpha_t * (torch.exp(-h) - 1.0)) * D0
         //     - 0.5 * (alpha_t * (torch.exp(-h) - 1.0)) * D1
         // )
         let x_t = [sample, D0, D1].weightedSum(
-            [p_sigma_t/sigma_s0, -p_alpha_t * expm1(-h), -0.5 * p_alpha_t * expm1(-h)]
+            [p_sigma_t/sigma_s1, -p_alpha_t * expm1(-h), -0.5 * p_alpha_t * expm1(-h)]
         )
         return x_t
     }
@@ -241,17 +271,25 @@ public final class DPMSolverMultistepScheduler: Scheduler {
         let timeStep = t
         let stepIndex = timeSteps.firstIndex(of: t) ?? timeSteps.count - 1
         let prevTimestep = stepIndex == timeSteps.count - 1 ? 0 : timeSteps[stepIndex + 1]
-
-        let lowerOrderFinal = useLowerOrderFinal && stepIndex == timeSteps.count - 1 && timeSteps.count < 15
-        let lowerOrderSecond = useLowerOrderFinal && stepIndex == timeSteps.count - 2 && timeSteps.count < 15
-        let lowerOrder = lowerOrderStepped < 1 || lowerOrderFinal || lowerOrderSecond
         
         let modelOutput = convertModelOutput(modelOutput: output, timestep: timeStep, sample: sample)
         if modelOutputs.count == solverOrder { modelOutputs.removeFirst() }
         modelOutputs.append(modelOutput)
         
+        var order = orderList[stepIndex]
+        
+        // For img2img denoising might start with order>1 which is not possible
+        // In this case make sure that the first two steps are both order=1
+        while modelOutputs.count < order {
+            order -= 1
+        }
+        
+        if order == 1 {
+            self.sample = sample
+        }
+        
         let prevSample: MLShapedArray<Float32>
-        if lowerOrder {
+        if order == 1 {
             prevSample = firstOrderUpdate(modelOutput: modelOutput, timestep: timeStep, prevTimestep: prevTimestep, sample: sample)
         } else {
             prevSample = secondOrderUpdate(
@@ -260,9 +298,6 @@ public final class DPMSolverMultistepScheduler: Scheduler {
                 prevTimestep: prevTimestep,
                 sample: sample
             )
-        }
-        if lowerOrderStepped < solverOrder {
-            lowerOrderStepped += 1
         }
         
         return prevSample

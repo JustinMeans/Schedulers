@@ -21,6 +21,7 @@ public final class PNDMScheduler: Scheduler {
     public let betas: [Float]
     public let alphas: [Float]
     public let alphasCumProd: [Float]
+    public let finalAlphaCumProd: Float
     public let timeSteps: [Double]
     public let predictionType: PredictionType
     
@@ -51,6 +52,8 @@ public final class PNDMScheduler: Scheduler {
         betaSchedule: BetaSchedule = .scaledLinear,
         betaStart: Float = 0.00085,
         betaEnd: Float = 0.012,
+        setAlphaToOne: Bool? = nil,
+        stepsOffset: Int? = nil,
         predictionType: PredictionType = .epsilon,
         timestepSpacing: TimestepSpacing? = nil
     ) {
@@ -67,6 +70,12 @@ public final class PNDMScheduler: Scheduler {
         }
         self.alphasCumProd = alphasCumProd
         
+        if setAlphaToOne ?? false {
+            self.finalAlphaCumProd = 1
+        } else {
+            self.finalAlphaCumProd = alphasCumProd[0]
+        }
+        
         // Currently we only support VP-type noise shedule
         self.alpha_t = vForce.sqrt(self.alphasCumProd)
         self.sigma_t = vForce.sqrt(vDSP.subtract([Float](repeating: 1, count: self.alphasCumProd.count), self.alphasCumProd))
@@ -80,7 +89,7 @@ public final class PNDMScheduler: Scheduler {
                 .reversed()
         case .leading:
             let stepRatio = trainStepCount / stepCount
-            timeSteps = (0..<stepCount).map { Double($0 * stepRatio).rounded() }.reversed()
+            timeSteps = (0..<stepCount).map { Double($0 * stepRatio).rounded() + Double(stepsOffset ?? 0) }.reversed()
         case .trailing:
             let stepRatio = Double(trainStepCount) / Double(stepCount)
             timeSteps = stride(from: Double(trainStepCount), to: 1, by: -stepRatio).map { round($0) - 1 }
@@ -211,7 +220,7 @@ public final class PNDMScheduler: Scheduler {
         // betaProdt        (1 - α_t)
         // betaProdtPrev    (1 - α_(t−δ))
         let alphaProdt = alphasCumProd[timeStep]
-        let alphaProdtPrev = alphasCumProd[max(0, prevStep)]
+        let alphaProdtPrev = prevStep >= 0 ? alphasCumProd[prevStep] : finalAlphaCumProd
         let betaProdt = 1 - alphaProdt
         let betaProdtPrev = 1 - alphaProdtPrev
 
